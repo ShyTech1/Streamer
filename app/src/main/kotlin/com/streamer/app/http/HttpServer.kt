@@ -5,6 +5,7 @@ import android.util.Base64
 import com.streamer.app.Config
 import com.streamer.app.FrameBus
 import com.streamer.app.camera.CameraController
+import com.streamer.app.motion.MotionDetector
 import com.streamer.app.sensors.SensorProvider
 import fi.iki.elonen.NanoHTTPD
 import kotlinx.coroutines.CoroutineScope
@@ -13,7 +14,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import com.streamer.app.camera.CameraInfoRow
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
@@ -22,19 +22,21 @@ import java.io.PipedOutputStream
 
 class HttpServer(
     private val ctx: Context,
-    private val cfg: Config,
+    initialCfg: Config,
     private val camera: CameraController,
     private val sensors: SensorProvider,
+    private val getMotion: () -> MotionDetector?,
     private val isRecording: () -> Boolean,
     private val toggleRecording: () -> Unit,
-) : NanoHTTPD(cfg.port) {
+    private val getCfg: () -> Config,
+    private val updateCfg: (Config) -> Unit,
+) : NanoHTTPD(initialCfg.port) {
 
+    private val useHttps = initialCfg.useHttps
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun startServer() {
-        if (cfg.useHttps) {
-            makeSecure(Tls.serverSocketFactory(ctx), null)
-        }
+        if (useHttps) makeSecure(Tls.serverSocketFactory(ctx), null)
         start(SOCKET_READ_TIMEOUT, true)
     }
 
@@ -55,6 +57,7 @@ class HttpServer(
             "/status"          -> statusJson()
             "/sensors"         -> sensors.json().let { json(it) }
             "/motion/events"   -> motionEventsJson()
+            "/motion/state"    -> motionStateJson()
             "/cameras"         -> camerasJson()
             "/control/torch"   -> torch(session)
             "/control/switch"  -> switchCam()
@@ -63,11 +66,13 @@ class HttpServer(
             "/control/record"  -> record()
             "/control/wide"    -> wide(session)
             "/control/camera"  -> pickCamera(session)
+            "/control/motion"  -> updateMotion(session)
             else -> newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "404")
         }
     }
 
     private fun authOk(session: IHTTPSession): Boolean {
+        val cfg = getCfg()
         if (!cfg.hasAuth) return true
         val hdr = session.headers["authorization"] ?: return false
         if (!hdr.startsWith("Basic ")) return false
@@ -94,6 +99,11 @@ class HttpServer(
         val job: Job = scope.launch {
             try {
                 FrameBus.frames.collect { f ->
+                    val cfg = getCfg()
+                    if (cfg.motionOnlyStream) {
+                        val last = getMotion()?.lastFireAt ?: 0L
+                        if (System.currentTimeMillis() - last > cfg.motionWindowSec * 1000L) return@collect
+                    }
                     val header = "--$boundary\r\nContent-Type: image/jpeg\r\nContent-Length: ${f.jpeg.size}\r\n\r\n"
                     pipeOut.write(header.toByteArray())
                     pipeOut.write(f.jpeg)
@@ -126,6 +136,9 @@ class HttpServer(
     }
 
     private fun statusJson(): Response {
+        val cfg = getCfg()
+        val m = getMotion()
+        val activeMs = m?.let { System.currentTimeMillis() - it.lastFireAt } ?: Long.MAX_VALUE
         val j = JSONObject().apply {
             put("width", cfg.width)
             put("height", cfg.height)
@@ -139,9 +152,18 @@ class HttpServer(
             put("wide", camera.wideActive)
             put("audio", cfg.enableAudio)
             put("motionRecord", cfg.motionRecord)
+            put("motionOnlyStream", cfg.motionOnlyStream)
+            put("motionSensitivity", cfg.motionSensitivity)
+            put("motionCooldownSec", cfg.motionCooldownSec)
+            put("motionWindowSec", cfg.motionWindowSec)
+            put("motionMagnitude", m?.lastMagnitude ?: 0.0)
+            put("motionActive", activeMs in 0..(cfg.motionWindowSec * 1000L))
+            put("motionLastAgoMs", if (activeMs == Long.MAX_VALUE) -1 else activeMs)
         }
         return json(j)
     }
+
+    private fun motionStateJson(): Response = statusJson()
 
     private fun camerasJson(): Response {
         val arr = JSONArray()
@@ -175,7 +197,7 @@ class HttpServer(
     }
 
     private fun wide(s: IHTTPSession): Response {
-        val on = param(s, "on")?.equals("1") ?: (camera.currentZoom >= 1f)
+        val on = param(s, "on")?.equals("1") ?: !camera.wideActive
         camera.setWide(on)
         return json(JSONObject().put("wide", on))
     }
@@ -194,6 +216,25 @@ class HttpServer(
     private fun record(): Response {
         toggleRecording()
         return json(JSONObject().put("recording", isRecording()))
+    }
+
+    private fun updateMotion(s: IHTTPSession): Response {
+        val cur = getCfg()
+        val next = cur.copy(
+            motionSensitivity = param(s, "sensitivity")?.toIntOrNull()?.coerceIn(1, 60) ?: cur.motionSensitivity,
+            motionCooldownSec = param(s, "cooldown")?.toIntOrNull()?.coerceIn(1, 300) ?: cur.motionCooldownSec,
+            motionWindowSec = param(s, "window")?.toIntOrNull()?.coerceIn(1, 300) ?: cur.motionWindowSec,
+            motionOnlyStream = param(s, "onlyStream")?.let { it == "1" } ?: cur.motionOnlyStream,
+            motionRecord = param(s, "record")?.let { it == "1" } ?: cur.motionRecord,
+        )
+        updateCfg(next)
+        return json(JSONObject().apply {
+            put("sensitivity", next.motionSensitivity)
+            put("cooldown", next.motionCooldownSec)
+            put("window", next.motionWindowSec)
+            put("onlyStream", next.motionOnlyStream)
+            put("record", next.motionRecord)
+        })
     }
 
     private fun motionEventsJson(): Response {

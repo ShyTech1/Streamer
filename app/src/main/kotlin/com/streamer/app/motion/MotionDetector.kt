@@ -13,13 +13,15 @@ import kotlin.math.abs
 
 class MotionDetector(
     private val scope: CoroutineScope,
-    private val threshold: Double = 12.0,
-    private val cooldownMs: Long = 5_000L,
+    @Volatile var threshold: Double = 12.0,
+    @Volatile var cooldownMs: Long = 5_000L,
     private val onMotion: (MotionEvent) -> Unit,
 ) {
     private var job: Job? = null
     private var prev: IntArray? = null
-    private var lastFire = 0L
+
+    @Volatile var lastFireAt: Long = 0L
+    @Volatile var lastMagnitude: Double = 0.0
 
     fun start() {
         job = scope.launch(Dispatchers.Default) {
@@ -53,11 +55,12 @@ class MotionDetector(
         var sum = 0L
         for (i in gray.indices) sum += abs(gray[i] - old[i])
         val avg = sum.toDouble() / gray.size
+        lastMagnitude = avg
 
         if (avg > threshold) {
             val now = System.currentTimeMillis()
-            if (now - lastFire > cooldownMs) {
-                lastFire = now
+            if (now - lastFireAt > cooldownMs) {
+                lastFireAt = now
                 val evt = MotionEvent(now, avg)
                 MotionLog.push(evt)
                 onMotion(evt)

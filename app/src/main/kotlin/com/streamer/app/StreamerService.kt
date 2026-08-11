@@ -24,14 +24,21 @@ import java.net.NetworkInterface
 
 class StreamerService : LifecycleService() {
 
-    private lateinit var cfg: Config
-    private lateinit var camera: CameraController
+    lateinit var cfg: Config
+    lateinit var camera: CameraController
     private var http: HttpServer? = null
     private var rtsp: RtspStreamer? = null
-    private var motion: MotionDetector? = null
+    var motion: MotionDetector? = null
     private var recorder: VideoRecorder? = null
     private lateinit var sensors: SensorProvider
     private var wakeLock: PowerManager.WakeLock? = null
+
+    fun updateConfig(newCfg: Config) {
+        cfg = newCfg
+        Config.save(this, newCfg)
+        motion?.threshold = newCfg.motionSensitivity.toDouble()
+        motion?.cooldownMs = newCfg.motionCooldownSec * 1000L
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -54,7 +61,17 @@ class StreamerService : LifecycleService() {
         cfg = Config.load(this)
 
         camera.start(this, cfg) {
-            http = HttpServer(this, cfg, camera, sensors, ::isRecording, ::toggleRecording).also {
+            http = HttpServer(
+                ctx = this,
+                initialCfg = cfg,
+                camera = camera,
+                sensors = sensors,
+                getMotion = { motion },
+                isRecording = ::isRecording,
+                toggleRecording = ::toggleRecording,
+                getCfg = { cfg },
+                updateCfg = ::updateConfig,
+            ).also {
                 try { it.startServer() } catch (_: Exception) {}
             }
             if (cfg.enableAudio) {
@@ -65,12 +82,14 @@ class StreamerService : LifecycleService() {
                     }
                 }
             }
-            if (cfg.motionRecord) {
-                motion = MotionDetector(lifecycleScope) { evt ->
-                    lifecycleScope.launch { FrameBus.publishMotion(evt) }
-                    if (!isRecording()) toggleRecording()
-                }.also { it.start() }
-            }
+            motion = MotionDetector(
+                scope = lifecycleScope,
+                threshold = cfg.motionSensitivity.toDouble(),
+                cooldownMs = cfg.motionCooldownSec * 1000L,
+            ) { evt ->
+                lifecycleScope.launch { FrameBus.publishMotion(evt) }
+                if (cfg.motionRecord && !isRecording()) toggleRecording()
+            }.also { it.start() }
         }
 
         instance = this

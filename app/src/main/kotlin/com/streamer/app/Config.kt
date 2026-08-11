@@ -16,6 +16,10 @@ data class Config(
     val jpegQuality: Int = 70,
     val enableAudio: Boolean = true,
     val startOnBoot: Boolean = false,
+    val motionSensitivity: Int = 12,     // 1..40 average pixel diff threshold
+    val motionCooldownSec: Int = 5,
+    val motionOnlyStream: Boolean = false,
+    val motionWindowSec: Int = 10,       // stream keeps flowing this long after motion
 ) {
     val hasAuth get() = user.isNotBlank() && pass.isNotBlank()
 
@@ -38,6 +42,10 @@ data class Config(
                 jpegQuality = p.getInt("jpegQuality", 70),
                 enableAudio = p.getBoolean("enableAudio", true),
                 startOnBoot = p.getBoolean("startOnBoot", false),
+                motionSensitivity = p.getInt("motionSensitivity", 12),
+                motionCooldownSec = p.getInt("motionCooldownSec", 5),
+                motionOnlyStream = p.getBoolean("motionOnlyStream", false),
+                motionWindowSec = p.getInt("motionWindowSec", 10),
             )
         }
 
@@ -56,6 +64,10 @@ data class Config(
                 putInt("jpegQuality", c.jpegQuality)
                 putBoolean("enableAudio", c.enableAudio)
                 putBoolean("startOnBoot", c.startOnBoot)
+                putInt("motionSensitivity", c.motionSensitivity)
+                putInt("motionCooldownSec", c.motionCooldownSec)
+                putBoolean("motionOnlyStream", c.motionOnlyStream)
+                putInt("motionWindowSec", c.motionWindowSec)
                 apply()
             }
         }
