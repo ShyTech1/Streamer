@@ -36,7 +36,13 @@ android {
     }
 
     packaging {
-        resources.excludes += "META-INF/*"
+        resources.excludes += setOf(
+            "META-INF/**",
+            "/META-INF/{AL2.0,LGPL2.1}",
+        )
+        resources.pickFirsts += setOf(
+            "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
+        )
     }
 }
 
