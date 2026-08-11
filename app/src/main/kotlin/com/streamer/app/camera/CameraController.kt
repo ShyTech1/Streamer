@@ -7,11 +7,11 @@ import android.graphics.Rect
 import android.graphics.YuvImage
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
-import androidx.camera.core.Preview
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -73,48 +73,58 @@ class CameraController(
 
     private fun bind(owner: LifecycleOwner, cfg: Config) {
         val p = provider ?: return
-        p.unbindAll()
+        try {
+            p.unbindAll()
 
-        val resolutionSelector = ResolutionSelector.Builder()
-            .setResolutionStrategy(
-                ResolutionStrategy(
-                    android.util.Size(cfg.width, cfg.height),
-                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
+            val resolutionSelector = ResolutionSelector.Builder()
+                .setResolutionStrategy(
+                    ResolutionStrategy(
+                        android.util.Size(cfg.width, cfg.height),
+                        ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
+                    )
                 )
-            )
-            .build()
+                .build()
 
-        val preview = Preview.Builder()
-            .setResolutionSelector(resolutionSelector)
-            .build()
+            val analysis = ImageAnalysis.Builder()
+                .setResolutionSelector(resolutionSelector)
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
+                .build()
 
-        val analysis = ImageAnalysis.Builder()
-            .setResolutionSelector(resolutionSelector)
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
-            .build()
-
-        val skipEvery = maxOf(1, 30 / maxOf(1, cfg.fps))
-        analysis.setAnalyzer(analyzerExec) { image ->
-            try {
-                if (skipCounter.getAndIncrement() % skipEvery != 0) return@setAnalyzer
-                encodeAndPublish(image, cfg.jpegQuality)
-            } finally {
-                image.close()
+            val skipEvery = maxOf(1, 30 / maxOf(1, cfg.fps))
+            analysis.setAnalyzer(analyzerExec) { image ->
+                try {
+                    if (skipCounter.getAndIncrement() % skipEvery != 0) return@setAnalyzer
+                    encodeAndPublish(image, cfg.jpegQuality)
+                } finally {
+                    image.close()
+                }
             }
+
+            val recorder = Recorder.Builder().build()
+            val vc = VideoCapture.withOutput(recorder)
+            videoCapture = vc
+
+            selector = if (frontFacing) CameraSelector.DEFAULT_FRONT_CAMERA
+                       else CameraSelector.DEFAULT_BACK_CAMERA
+
+            camera = try {
+                p.bindToLifecycle(owner, selector, analysis, vc)
+            } catch (e: Exception) {
+                Log.w(TAG, "bind with VideoCapture failed on ${if (frontFacing) "front" else "back"} cam, retrying without recorder: $e")
+                videoCapture = null
+                p.bindToLifecycle(owner, selector, analysis)
+            }
+
+            camera?.cameraControl?.enableTorch(torchOn)
+            if (currentZoom != 1f) camera?.cameraControl?.setZoomRatio(currentZoom)
+            Log.i(TAG, "bound ${if (frontFacing) "front" else "back"} camera")
+        } catch (e: Exception) {
+            Log.e(TAG, "bind failed", e)
         }
-
-        val recorder = Recorder.Builder().build()
-        val vc = VideoCapture.withOutput(recorder)
-        videoCapture = vc
-
-        selector = if (frontFacing) CameraSelector.DEFAULT_FRONT_CAMERA
-                   else CameraSelector.DEFAULT_BACK_CAMERA
-
-        camera = p.bindToLifecycle(owner, selector, preview, analysis, vc)
-        camera?.cameraControl?.enableTorch(torchOn)
-        if (currentZoom != 1f) camera?.cameraControl?.setZoomRatio(currentZoom)
     }
+
+    companion object { private const val TAG = "CameraController" }
 
     fun switchCamera() {
         val owner = lastOwner ?: return
