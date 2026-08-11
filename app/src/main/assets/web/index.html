@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Streamer</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+    <h1>Streamer</h1>
+    <span id="status" class="status">connecting…</span>
+</header>
+
+<main>
+    <div class="video-wrap">
+        <img id="video" src="/video.mjpeg" alt="live">
+    </div>
+
+    <section class="controls">
+        <div class="row">
+            <button data-act="torch">Torch</button>
+            <button data-act="switch">Switch camera</button>
+            <button data-act="focus">Autofocus</button>
+            <button data-act="record">Record</button>
+        </div>
+        <div class="row">
+            <label>Zoom
+                <input type="range" id="zoom" min="1" max="10" step="0.1" value="1">
+            </label>
+            <span id="zoomVal">1.0x</span>
+        </div>
+        <div class="row">
+            <a href="/photo.jpg" target="_blank">Snapshot</a>
+            <a href="/motion/events" target="_blank">Motion events</a>
+            <a href="/sensors" target="_blank">Sensors</a>
+            <a href="/status" target="_blank">Status JSON</a>
+        </div>
+    </section>
+</main>
+
+<script src="/control.js"></script>
+</body>
+</html>
