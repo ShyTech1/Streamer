@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Streamer</string>
+    <string name="notif_channel_id">streamer_service</string>
+    <string name="notif_channel_name">Streamer</string>
+    <string name="notif_title">Streamer running</string>
+    <string name="notif_text">Camera server is active</string>
+</resources>
