@@ -5,10 +5,15 @@ import android.content.Context
 import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.graphics.YuvImage
+import android.hardware.camera2.CameraCharacteristics
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
+import androidx.camera.core.CameraFilter
+import androidx.camera.core.CameraInfo
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -30,6 +35,7 @@ import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
+@OptIn(ExperimentalCamera2Interop::class)
 class CameraController(
     private val ctx: Context,
     private val scope: CoroutineScope,
@@ -43,12 +49,18 @@ class CameraController(
     private var lastOwner: LifecycleOwner? = null
     private var lastCfg: Config? = null
 
-    private var selector = CameraSelector.DEFAULT_BACK_CAMERA
+    val allCameras: List<CameraInfoRow> by lazy { CameraEnumerator.list(ctx) }
+    private val backMain    get() = allCameras.firstOrNull { it.facing == CameraCharacteristics.LENS_FACING_BACK && it.role == "main" }
+    private val backWide    get() = allCameras.firstOrNull { it.facing == CameraCharacteristics.LENS_FACING_BACK && it.role == "ultrawide" }
+    private val frontCam    get() = allCameras.firstOrNull { it.facing == CameraCharacteristics.LENS_FACING_FRONT }
+
+    @Volatile private var currentId: String? = null
     private val skipCounter = AtomicInteger(0)
 
     @Volatile var currentZoom: Float = 1f
     @Volatile var torchOn: Boolean = false
-    @Volatile var frontFacing: Boolean = false
+    val frontFacing: Boolean get() = currentId == frontCam?.id
+    val wideActive: Boolean  get() = currentId != null && currentId == backWide?.id
 
     val minZoom: Float get() = camera?.cameraInfo?.zoomState?.value?.minZoomRatio ?: 1f
     val maxZoom: Float get() = camera?.cameraInfo?.zoomState?.value?.maxZoomRatio ?: 1f
@@ -60,6 +72,7 @@ class CameraController(
         val future = ProcessCameraProvider.getInstance(ctx)
         future.addListener({
             provider = future.get()
+            currentId = backMain?.id ?: allCameras.firstOrNull { it.facing == CameraCharacteristics.LENS_FACING_BACK }?.id
             bind(owner, cfg)
             onReady()
         }, ContextCompat.getMainExecutor(ctx))
@@ -69,6 +82,24 @@ class CameraController(
         provider?.unbindAll()
         activeRecording?.stop()
         activeRecording = null
+    }
+
+    private fun selectorFor(cameraId: String?): CameraSelector {
+        val id = cameraId
+        val builder = CameraSelector.Builder()
+        if (id != null) {
+            builder.addCameraFilter(object : CameraFilter {
+                override fun filter(cameraInfos: MutableList<CameraInfo>): MutableList<CameraInfo> {
+                    val match = cameraInfos.firstOrNull {
+                        try { Camera2CameraInfo.from(it).cameraId == id } catch (_: Exception) { false }
+                    }
+                    return if (match != null) mutableListOf(match) else cameraInfos
+                }
+            })
+        } else {
+            builder.requireLensFacing(CameraSelector.LENS_FACING_BACK)
+        }
+        return builder.build()
     }
 
     private fun bind(owner: LifecycleOwner, cfg: Config) {
@@ -105,41 +136,58 @@ class CameraController(
             val vc = VideoCapture.withOutput(recorder)
             videoCapture = vc
 
-            selector = if (frontFacing) CameraSelector.DEFAULT_FRONT_CAMERA
-                       else CameraSelector.DEFAULT_BACK_CAMERA
+            val selector = selectorFor(currentId)
 
             camera = try {
                 p.bindToLifecycle(owner, selector, analysis, vc)
             } catch (e: Exception) {
-                Log.w(TAG, "bind with VideoCapture failed on ${if (frontFacing) "front" else "back"} cam, retrying without recorder: $e")
+                Log.w(TAG, "bind with VideoCapture failed on $currentId, retrying stream-only: $e")
                 videoCapture = null
                 p.bindToLifecycle(owner, selector, analysis)
             }
 
             camera?.cameraControl?.enableTorch(torchOn)
-            if (currentZoom != 1f) camera?.cameraControl?.setZoomRatio(currentZoom)
-            Log.i(TAG, "bound ${if (frontFacing) "front" else "back"} camera")
+            currentZoom = 1f
+            Log.i(TAG, "bound camera id=$currentId")
         } catch (e: Exception) {
-            Log.e(TAG, "bind failed", e)
+            Log.e(TAG, "bind failed for id=$currentId", e)
         }
     }
-
-    companion object { private const val TAG = "CameraController" }
 
     fun switchCamera() {
         val owner = lastOwner ?: return
         val cfg = lastCfg ?: return
         mainHandler.post {
-            frontFacing = !frontFacing
-            currentZoom = 1f
+            val order = listOfNotNull(backMain?.id, frontCam?.id, backWide?.id).distinct()
+            if (order.isEmpty()) return@post
+            val idx = order.indexOf(currentId).let { if (it < 0) 0 else (it + 1) % order.size }
+            currentId = order[idx]
             bind(owner, cfg)
         }
     }
 
+    fun selectCamera(id: String) {
+        val owner = lastOwner ?: return
+        val cfg = lastCfg ?: return
+        if (allCameras.none { it.id == id }) {
+            Log.w(TAG, "selectCamera: unknown id=$id"); return
+        }
+        mainHandler.post { currentId = id; bind(owner, cfg) }
+    }
+
     fun setWide(on: Boolean) {
+        val owner = lastOwner ?: return
+        val cfg = lastCfg ?: return
         mainHandler.post {
-            val target = if (on) (minZoom.takeIf { it < 1f } ?: 1f) else 1f
-            setZoom(target)
+            val target = if (on) (backWide?.id ?: backMain?.id) else backMain?.id
+            if (target != null && target != currentId) {
+                currentId = target
+                bind(owner, cfg)
+            } else {
+                Log.i(TAG, "setWide($on): no separate ultrawide available; trying zoom-out fallback")
+                val z = if (on) (minZoom.takeIf { it < 1f } ?: 1f) else 1f
+                setZoom(z)
+            }
         }
     }
 
@@ -158,7 +206,6 @@ class CameraController(
     }
 
     fun triggerAutofocus() {
-        val info = camera?.cameraInfo ?: return
         val factory = androidx.camera.core.SurfaceOrientedMeteringPointFactory(1f, 1f)
         val point = factory.createPoint(0.5f, 0.5f)
         val action = androidx.camera.core.FocusMeteringAction.Builder(point).build()
@@ -195,4 +242,6 @@ class CameraController(
         val ok = yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), quality, out)
         return if (ok) out.toByteArray() else null
     }
+
+    companion object { private const val TAG = "CameraController" }
 }

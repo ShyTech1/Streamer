@@ -3,12 +3,32 @@
     const status = $('#status');
     const zoom = $('#zoom');
     const zoomVal = $('#zoomVal');
+    const pick = $('#cameraPick');
 
     async function post(url) {
         const r = await fetch(url, { method: 'POST' });
         if (!r.ok) throw new Error(r.statusText);
         return r.json();
     }
+
+    async function loadCameras() {
+        try {
+            const r = await (await fetch('/cameras')).json();
+            pick.innerHTML = '';
+            for (const c of r.cameras || []) {
+                const opt = document.createElement('option');
+                opt.value = c.id;
+                const face = c.facing === 0 ? 'front' : 'back';
+                opt.textContent = `${c.role || face} (${face}, id=${c.id}, ~${Math.round(c.equiv35)}mm)`;
+                pick.appendChild(opt);
+            }
+        } catch (e) { console.error(e); }
+    }
+
+    pick.addEventListener('change', async () => {
+        try { await post('/control/camera?id=' + encodeURIComponent(pick.value)); refresh(); }
+        catch (e) { console.error(e); }
+    });
 
     async function refresh() {
         try {
@@ -20,7 +40,7 @@
                 const act = btn.dataset.act;
                 if (act === 'torch')  btn.classList.toggle('on', !!s.torch);
                 if (act === 'record') btn.classList.toggle('on', !!s.recording);
-                if (act === 'wide')   btn.classList.toggle('on', s.zoom < 1);
+                if (act === 'wide')   btn.classList.toggle('on', !!s.wide);
                 if (act === 'switch') btn.textContent = s.front ? 'Front cam' : 'Back cam';
             }
             if (typeof s.minZoom === 'number') zoom.min = s.minZoom;
@@ -55,6 +75,7 @@
         catch (e) { console.error(e); }
     });
 
+    loadCameras();
     refresh();
     setInterval(refresh, 3000);
 })();

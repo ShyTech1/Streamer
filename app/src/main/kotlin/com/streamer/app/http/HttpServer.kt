@@ -13,6 +13,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import com.streamer.app.camera.CameraInfoRow
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
@@ -54,12 +55,14 @@ class HttpServer(
             "/status"          -> statusJson()
             "/sensors"         -> sensors.json().let { json(it) }
             "/motion/events"   -> motionEventsJson()
+            "/cameras"         -> camerasJson()
             "/control/torch"   -> torch(session)
             "/control/switch"  -> switchCam()
             "/control/zoom"    -> zoom(session)
             "/control/focus"   -> focus()
             "/control/record"  -> record()
             "/control/wide"    -> wide(session)
+            "/control/camera"  -> pickCamera(session)
             else -> newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "404")
         }
     }
@@ -133,10 +136,31 @@ class HttpServer(
             put("minZoom", camera.minZoom.toDouble())
             put("maxZoom", camera.maxZoom.toDouble())
             put("front", camera.frontFacing)
+            put("wide", camera.wideActive)
             put("audio", cfg.enableAudio)
             put("motionRecord", cfg.motionRecord)
         }
         return json(j)
+    }
+
+    private fun camerasJson(): Response {
+        val arr = JSONArray()
+        for (c in camera.allCameras) {
+            arr.put(JSONObject().apply {
+                put("id", c.id)
+                put("facing", c.facing)
+                put("focalMm", c.focalMm.toDouble())
+                put("equiv35", c.equiv35.toDouble())
+                put("role", c.role)
+            })
+        }
+        return json(JSONObject().put("cameras", arr))
+    }
+
+    private fun pickCamera(s: IHTTPSession): Response {
+        val id = param(s, "id") ?: return json(JSONObject().put("ok", false).put("err", "missing id"))
+        camera.selectCamera(id)
+        return json(JSONObject().put("ok", true).put("id", id))
     }
 
     private fun torch(s: IHTTPSession): Response {
