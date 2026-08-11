@@ -18,10 +18,13 @@
             status.classList.add('ok');
             for (const btn of document.querySelectorAll('button[data-act]')) {
                 const act = btn.dataset.act;
-                if (act === 'torch') btn.classList.toggle('on', !!s.torch);
+                if (act === 'torch')  btn.classList.toggle('on', !!s.torch);
                 if (act === 'record') btn.classList.toggle('on', !!s.recording);
+                if (act === 'wide')   btn.classList.toggle('on', s.zoom < 1);
                 if (act === 'switch') btn.textContent = s.front ? 'Front cam' : 'Back cam';
             }
+            if (typeof s.minZoom === 'number') zoom.min = s.minZoom;
+            if (typeof s.maxZoom === 'number') zoom.max = s.maxZoom;
             zoom.value = s.zoom;
             zoomVal.textContent = Number(s.zoom).toFixed(1) + 'x';
         } catch (e) {
@@ -36,6 +39,7 @@
             try {
                 if (act === 'torch')  await post('/control/torch');
                 if (act === 'switch') await post('/control/switch');
+                if (act === 'wide')   await post('/control/wide');
                 if (act === 'focus')  await post('/control/focus');
                 if (act === 'record') await post('/control/record');
                 refresh();

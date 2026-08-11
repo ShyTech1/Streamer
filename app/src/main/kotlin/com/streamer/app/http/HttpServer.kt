@@ -59,6 +59,7 @@ class HttpServer(
             "/control/zoom"    -> zoom(session)
             "/control/focus"   -> focus()
             "/control/record"  -> record()
+            "/control/wide"    -> wide(session)
             else -> newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "404")
         }
     }
@@ -129,6 +130,8 @@ class HttpServer(
             put("recording", isRecording())
             put("torch", camera.torchOn)
             put("zoom", camera.currentZoom.toDouble())
+            put("minZoom", camera.minZoom.toDouble())
+            put("maxZoom", camera.maxZoom.toDouble())
             put("front", camera.frontFacing)
             put("audio", cfg.enableAudio)
             put("motionRecord", cfg.motionRecord)
@@ -143,10 +146,14 @@ class HttpServer(
     }
 
     private fun switchCam(): Response {
-        val svc = com.streamer.app.StreamerService.instance
-            ?: return json(JSONObject().put("ok", false).put("err", "service not running"))
-        camera.switchCamera(svc, cfg)
-        return json(JSONObject().put("front", camera.frontFacing))
+        camera.switchCamera()
+        return json(JSONObject().put("ok", true))
+    }
+
+    private fun wide(s: IHTTPSession): Response {
+        val on = param(s, "on")?.equals("1") ?: (camera.currentZoom >= 1f)
+        camera.setWide(on)
+        return json(JSONObject().put("wide", on))
     }
 
     private fun zoom(s: IHTTPSession): Response {

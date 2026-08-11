@@ -5,6 +5,8 @@ import android.content.Context
 import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.graphics.YuvImage
+import android.os.Handler
+import android.os.Looper
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -33,10 +35,13 @@ class CameraController(
     private val scope: CoroutineScope,
 ) {
     private val analyzerExec = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var provider: ProcessCameraProvider? = null
     private var camera: Camera? = null
     private var videoCapture: VideoCapture<Recorder>? = null
     private var activeRecording: Recording? = null
+    private var lastOwner: LifecycleOwner? = null
+    private var lastCfg: Config? = null
 
     private var selector = CameraSelector.DEFAULT_BACK_CAMERA
     private val skipCounter = AtomicInteger(0)
@@ -45,8 +50,13 @@ class CameraController(
     @Volatile var torchOn: Boolean = false
     @Volatile var frontFacing: Boolean = false
 
+    val minZoom: Float get() = camera?.cameraInfo?.zoomState?.value?.minZoomRatio ?: 1f
+    val maxZoom: Float get() = camera?.cameraInfo?.zoomState?.value?.maxZoomRatio ?: 1f
+
     @SuppressLint("RestrictedApi")
     fun start(owner: LifecycleOwner, cfg: Config, onReady: () -> Unit = {}) {
+        lastOwner = owner
+        lastCfg = cfg
         val future = ProcessCameraProvider.getInstance(ctx)
         future.addListener({
             provider = future.get()
@@ -106,9 +116,21 @@ class CameraController(
         if (currentZoom != 1f) camera?.cameraControl?.setZoomRatio(currentZoom)
     }
 
-    fun switchCamera(owner: LifecycleOwner, cfg: Config) {
-        frontFacing = !frontFacing
-        bind(owner, cfg)
+    fun switchCamera() {
+        val owner = lastOwner ?: return
+        val cfg = lastCfg ?: return
+        mainHandler.post {
+            frontFacing = !frontFacing
+            currentZoom = 1f
+            bind(owner, cfg)
+        }
+    }
+
+    fun setWide(on: Boolean) {
+        mainHandler.post {
+            val target = if (on) (minZoom.takeIf { it < 1f } ?: 1f) else 1f
+            setZoom(target)
+        }
     }
 
     fun setTorch(on: Boolean) {
